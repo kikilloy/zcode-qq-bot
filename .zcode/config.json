@@ -1,0 +1,7 @@
+{
+  "plugins": {
+    "enabledPlugins": {
+      "zcode-qqbot@zcode-qqbot-dev": true
+    }
+  }
+}

@@ -1,0 +1,23 @@
+# 依赖与构建产物
+node_modules/
+zcode-qqbot/dist/
+
+# 本地参考/考古资料（不入库）
+pi-version/
+sdk-nodejs/
+sdk-py/
+
+# 运行时本地产物
+chat/
+pair-qr.png
+pair-qr.svg
+*.log
+
+# 探针 scratch 工作目录与原始采集数据（含会话 id，知识点已汇总进 findings.md）
+probe/**/scratch/
+probe/stop-events.ndjson
+
+# 内部交接文档（含移植对照表，仅本地保存）
+HANDOFF.md
+# v2 机制逆向分析档（含宿主内部机制证据链，仅本地保存）
+docs/v2-daemon.md

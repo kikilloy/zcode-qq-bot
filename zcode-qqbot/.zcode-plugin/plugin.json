@@ -1,0 +1,19 @@
+{
+  "name": "zcode-qqbot",
+  "version": "0.4.2",
+  "description": "把 QQ 私聊桥接到当前 zcode 桌面会话",
+  "author": {
+    "name": "march7black"
+  },
+  "mcpServers": {
+    "qqbot": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/dist/mcp-server.mjs"
+      ]
+    }
+  },
+  "hooks": "./hooks/hooks.json",
+  "commands": "./commands",
+  "skills": "./skills"
+}

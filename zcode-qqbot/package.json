@@ -1,0 +1,24 @@
+{
+  "name": "zcode-qqbot",
+  "version": "0.4.2",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "把 QQ 私聊桥接到当前 zcode 桌面会话（zcode 插件源码包）",
+  "scripts": {
+    "build": "node ./esbuild.config.mjs",
+    "smoke": "node ./test/smoke-mcp.mjs",
+    "e2e": "node ./test/bundle-e2e.mjs",
+    "test": "node --test test/core.test.ts test/config.test.ts test/state.test.ts test/lock.test.ts test/log.test.ts test/media.test.ts && node test/flow-harness.mjs && node test/hook-harness.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/qrcode": "^1.5.5",
+    "esbuild": "^0.25.0"
+  },
+  "dependencies": {
+    "@tencent-connect/qqbot-connector": "^1.2.0",
+    "@tencent-connect/qqbot-nodejs": "^1.0.5",
+    "qrcode": "^1.5.3"
+  }
+}

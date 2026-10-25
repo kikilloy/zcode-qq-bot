@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "process",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/dist/hook-user-prompt-submit.mjs"],
+            "timeoutMs": 15000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "process",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/dist/hook-stop.mjs"],
+            "timeoutMs": 15000
+          }
+        ]
+      }
+    ]
+  }
+}
