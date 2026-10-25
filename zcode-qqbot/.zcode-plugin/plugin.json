@@ -1,6 +1,6 @@
 {
   "name": "zcode-qqbot",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "把 QQ 私聊桥接到当前 zcode 桌面会话",
   "author": {
     "name": "march7black"

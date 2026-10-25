@@ -188,6 +188,7 @@ await bot.emitMessage(
   inbound({ content: "长文", messageId: "m6", replyTarget: { scope: "c2c", targetId: "owner-1", msgId: "m6" } }),
 );
 const mark = bot.sent.length;
+gw.pendingReplies = []; // 白盒清队：本节只测配额降级，与 FIFO 路由解耦（0.4.5 起缺省回复最早未回复者）
 rep = await gw.reply("z".repeat(2200));
 assert.equal(rep.ok, true);
 assert.ok(rep.stats.sent >= 5, `2200 字 / 500 分片应 >=5 片，实际 ${rep.stats.sent}`);
@@ -552,6 +553,35 @@ await gw10.reply("过期窗口测试", "member-b");
 assert.equal(bot10.sent.at(-1).target.msgId, undefined, "群 5 分钟窗口外的 msg_id 不得使用");
 gw10.disconnect();
 console.log("ok  按人路由：to=A/B 各归其位 / 陌生人拒绝 / 被动失败降级 / 群 5min 窗口");
+
+// -- 19. 顺序到达不互踩（0.4.5 真机案：A 已注入处理中，B 后到不得抢走路由）--
+const gw11 = new Gateway({ sessionId: "sess-K", pid: 1100, notify: () => {} });
+await gw11.init();
+await gw11.applyConfig({ allowGroup: true, allowGroupFrom: ["grp-x"] });
+const bot11 = globalThis.__qqBotFake.instances.at(-1);
+bot11.emitReady();
+
+// a) A 注入后 B 才到：对 A 的回复（不带 to）必须回到 A——旧逻辑会被 B 覆盖
+await bot11.emitMessage({}, groupMsg("NEW-OWNER", "grp-x", "m19a"));
+await waitInbox(gw11, 1);
+let c19 = claimOf(gw11.claim({ via: "ups" }));
+assert.equal(c19.action, "inject");
+await bot11.emitMessage({}, groupMsg("member-b", "grp-x", "m19b")); // B 后到，模型正忙于 A
+await gw11.reply("答 A（不带 to）");
+assert.equal(bot11.sent.at(-1).target.msgId, "m19a", "对 A 的回复不得被后到的 B 抢走");
+
+// b) B 随后注入，正常回到 B
+await waitInbox(gw11, 1);
+c19 = claimOf(gw11.claim({ via: "ups" }));
+assert.equal(c19.action, "inject");
+await gw11.reply("答 B");
+assert.equal(bot11.sent.at(-1).target.msgId, "m19b");
+
+// c) 队列清空后缺省回最近目标（原 0.4.4 语义作兜底）
+await gw11.reply("追加一句");
+assert.equal(bot11.sent.at(-1).target.msgId, "m19b", "队列空时回最近来信人");
+gw11.disconnect();
+console.log("ok  顺序到达：FIFO 路由不被后到者抢占 / 队列空回最近");
 
 // -- 清理 ------------------------------------------------------------------
 await cp.close();

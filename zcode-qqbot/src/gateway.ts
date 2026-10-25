@@ -187,6 +187,8 @@ export class Gateway {
   private waiterCount = 0;
   /** 最近来信人 → 回复目标（0.4.4 按人路由）：qq_reply(to) 取这里，撤回重发后自动用最新 msg_id。 */
   private recentTargets = new Map<string, PersistedTarget>();
+  /** 按注入顺序的待回复队列（0.4.5）：qq_reply 不带 to 时 FIFO 回应最早未回复者——后来消息不再抢走路由。 */
+  private pendingReplies: Array<{ openid: string; target: PersistedTarget }> = [];
 
   constructor(opts: GatewayOptions = {}) {
     this.sessionId = detectSessionId(opts.sessionId);
@@ -452,6 +454,7 @@ export class Gateway {
     this.pendingBind = undefined;
     this.lastStimulus = undefined;
     this.duty = false; // 断开即退出值守（挂起的 qq_wait 会经 running=false 自行返回）
+    this.pendingReplies = []; // 排队回复随断开作废（重连后来信重新入队）
     for (const t of this.idleTimers) clearTimeout(t);
     this.idleTimers.clear();
     releaseLock({ pid: this.lockPid });
@@ -626,6 +629,7 @@ export class Gateway {
     }
     if (this.inbox.length > 0) {
       const items = this.inbox.splice(0, CLAIM_MAX_PER_TURN);
+      this.pushPending(items);
       const reason = this.injectBody(items);
       this.lastStimulus = { kind: "inject", at: now };
       logLine("claim-inject", { via, count: items.length, remaining: this.inbox.length });
@@ -667,6 +671,7 @@ export class Gateway {
         }
         if (this.inbox.length > 0) {
           const items = this.inbox.splice(0, CLAIM_MAX_PER_TURN);
+          this.pushPending(items);
           this.claimSeq += 1; // 空闲通知据此自熄
           this.lastStimulus = { kind: "inject", at: Date.now() };
           logLine("wait-inject", { count: items.length, remaining: this.inbox.length });
@@ -689,6 +694,38 @@ export class Gateway {
     this.duty = false;
     logLine("duty-stop", {});
     return { duty: this.duty };
+  }
+
+  /** 来信注入会话时入待回复队列（FIFO）：不带 to 的 qq_reply 按此顺序回应。 */
+  private pushPending(items: InboxItem[]): void {
+    for (const i of items) {
+      this.pendingReplies.push({
+        openid: i.openid,
+        target: { scope: i.scope, targetId: i.targetId, ...(i.msgId ? { msgId: i.msgId } : {}), at: i.at },
+      });
+    }
+    if (this.pendingReplies.length > 16) this.pendingReplies.splice(0, this.pendingReplies.length - 16);
+  }
+
+  /**
+   * 取本次回复的路由目标：to 指定 → 该人最新目标并清其排队；缺省 → 弹出最早未回复者
+   * （0.4.5：回复跟着驱动回合的消息走，后来的来信不再覆盖路由）；队列空 → 最近目标。
+   */
+  private takeReplyTarget(
+    to?: string,
+  ): { ok: true; target: PersistedTarget } | { ok: false; error: string } {
+    if (to) {
+      const t = this.recentTargets.get(to);
+      this.pendingReplies = this.pendingReplies.filter((p) => p.openid !== to);
+      if (!t) {
+        return { ok: false, error: `没有 ${to} 的最近来信记录（窗口外或从未收到）——请让 TA 重新发一条，或省略 to 按顺序回复` };
+      }
+      return { ok: true, target: t };
+    }
+    const head = this.pendingReplies.shift();
+    if (head) return { ok: true, target: head.target };
+    if (this.target) return { ok: true, target: this.target };
+    return { ok: false, error: "还没有回复目标：让用户在 QQ 里给机器人发一条消息" };
   }
 
   /** 注入文本（claim 与 qq_wait 共用）：逐条列出；多发件人时提示按人路由逐人回复。 */
@@ -775,19 +812,11 @@ export class Gateway {
    */
   async reply(text: string, to?: string): Promise<ReplyOutcome> {
     if (!this.running) return { ok: false, error: "QQ 未连接：先 qq_connect（或 /qq-connect）" };
-    let target = this.target;
-    if (to) {
-      const t = this.recentTargets.get(to);
-      if (!t) {
-        return { ok: false, error: `没有 ${to} 的最近来信记录（窗口外或从未收到）——请让 TA 重新发一条，或省略 to 回复最近来信人` };
-      }
-      target = t;
-    }
-    if (!target) {
-      return { ok: false, error: "还没有回复目标：让用户在 QQ 里给机器人发一条消息" };
-    }
     const body = text.trim();
     if (!body) return { ok: false, error: "回复内容为空" };
+    const picked = this.takeReplyTarget(to);
+    if (!picked.ok) return { ok: false, error: picked.error };
+    const target = picked.target;
     this.lastReplyAt = Date.now();
     const stats = await this.sendChunks(body, undefined, target);
     const msgId = this.effectiveMsgId(target);

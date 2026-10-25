@@ -11,7 +11,7 @@ import { Gateway } from "./gateway.ts";
 import { PairManager } from "./pair.ts";
 import { logLine } from "./log.ts";
 
-const SERVER_INFO = { name: "zcode-qqbot", version: "0.4.4" };
+const SERVER_INFO = { name: "zcode-qqbot", version: "0.4.5" };
 
 // ------------------------------------------------------------------ bootstrap
 

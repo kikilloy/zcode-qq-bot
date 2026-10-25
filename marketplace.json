@@ -4,7 +4,7 @@
     {
       "name": "zcode-qqbot",
       "source": "./zcode-qqbot",
-      "version": "0.4.4",
+      "version": "0.4.5",
       "description": "把 QQ 私聊桥接到当前 zcode 会话（本地开发版）",
       "displayName": "zcode-qqbot",
       "displayName_i18n": {
