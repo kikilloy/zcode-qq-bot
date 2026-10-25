@@ -10,6 +10,7 @@ export class QQBot {
     this.sent = [];
     this.started = false;
     this.stopped = false;
+    this.failPassive = false;
     (globalThis.__qqBotFake ??= { instances: [] }).instances.push(this);
   }
 
@@ -36,6 +37,7 @@ export class QQBot {
   }
 
   async sendText(target, content) {
+    if (this.failPassive && target.msgId) throw new Error("simulated passive send failure");
     this.sent.push({ target, content });
     return { id: `msg-${this.sent.length}` };
   }

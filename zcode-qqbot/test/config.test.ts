@@ -50,6 +50,7 @@ test("normalizeConfig: v1 默认值（forwardTerminal 关、selfHeal 开、autoC
   assert.equal(r.config.idleNotify, true, "空闲桌面通知默认开（0.3.2）");
   assert.equal(r.config.idleAck, true, "空闲 QQ 回执默认开（0.3.2）");
   assert.deepEqual(r.config.allowFrom, []);
+  assert.deepEqual(r.config.allowGroupFrom, [], "群开放名单默认空（0.4.3）");
 });
 
 test("normalizeConfig: 显式 autoConnect:false 被保留（迁移后用户仍可关）", () => {
@@ -60,7 +61,7 @@ test("normalizeConfig: 显式 autoConnect:false 被保留（迁移后用户仍�
 
 test("normalizeConfig: 显式值被保留", () => {
   const r = normalizeConfig(
-    { ...VALID, forwardTerminal: true, selfHeal: false, allowFrom: [" o1 ", "", "o2"], autoConnect: true },
+    { ...VALID, forwardTerminal: true, selfHeal: false, allowFrom: [" o1 ", "", "o2"], allowGroupFrom: [" g1 ", "", "g2"], autoConnect: true },
     p,
   );
   assert.equal(r.ok, true);
@@ -69,6 +70,7 @@ test("normalizeConfig: 显式值被保留", () => {
   assert.equal(r.config.selfHeal, false);
   assert.equal(r.config.autoConnect, true);
   assert.deepEqual(r.config.allowFrom, ["o1", "o2"]);
+  assert.deepEqual(r.config.allowGroupFrom, ["g1", "g2"], "群开放名单同 allowFrom 清洗规则");
 });
 
 test("normalizeConfig: maxChunkChars 钳制到 [500, 4800]", () => {

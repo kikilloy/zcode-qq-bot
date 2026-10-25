@@ -471,6 +471,88 @@ gifServer.close();
 delete process.env.ZCODE_QQBOT_MEDIA;
 console.log("ok  入站媒体：大表情解码 / GIF 下载落盘 / 无url兜底 / rawEvent 留证 / 空消息丢弃");
 
+// -- 17. 群开放名单（0.4.3）：开放群全员 @ 放行；陌生群仍逐人过滤 --------------
+const gw9 = new Gateway({ sessionId: "sess-I", pid: 900, notify: () => {} });
+await gw9.init();
+await gw9.applyConfig({ allowGroup: true, allowGroupFrom: ["grp-open"] });
+const bot9 = globalThis.__qqBotFake.instances.at(-1);
+bot9.emitReady();
+const groupMsg = (senderId, groupId, messageId) => ({
+  kind: "group",
+  senderId,
+  content: `群消息${messageId}`,
+  messageId,
+  replyTarget: { scope: "group", targetId: groupId, msgId: messageId },
+});
+
+// a) 开放群里的陌生成员 → 放行（水群模式）
+await bot9.emitMessage({}, groupMsg("member-x", "grp-open", "g17a"));
+await waitInbox(gw9, 1);
+let c17 = claimOf(gw9.claim({ via: "ups" }));
+assert.equal(c17.action, "inject");
+assert.match(c17.reason, /群消息g17a/, "开放群陌生成员应入箱");
+await gw9.reply("群开放收到");
+
+// b) 陌生群里的陌生成员 → 拒（not-allowlisted，防陌生群拉 bot 驱动会话）
+await bot9.emitMessage({}, groupMsg("member-y", "grp-other", "g17b"));
+await new Promise((r) => setTimeout(r, 150));
+assert.equal((gw9.status().inboxPreview ?? []).length, 0, "陌生群陌生成员不得入箱");
+c17 = claimOf(gw9.claim({ via: "ups" }));
+assert.equal(c17.action, "none");
+
+// c) 陌生群里的白名单成员（owner 回退路径）→ 保留放行
+await bot9.emitMessage({}, groupMsg("NEW-OWNER", "grp-other", "g17c"));
+await waitInbox(gw9, 1);
+c17 = claimOf(gw9.claim({ via: "ups" }));
+assert.equal(c17.action, "inject", "owner 在任何群都应放行");
+await gw9.reply("owner 回退");
+assert.deepEqual(gw9.status().allowGroupFrom, ["grp-open"], "状态面应暴露群开放名单");
+gw9.disconnect();
+console.log("ok  群开放名单：开放群全员放行 / 陌生群拒陌生成员 / owner 回退保留");
+
+// -- 18. 按人路由 + 被动失败降级（0.4.4：多人群聊互踩 / 撤回后回复蒸发）-------
+const gw10 = new Gateway({ sessionId: "sess-J", pid: 1000, notify: () => {} });
+await gw10.init();
+await gw10.applyConfig({ allowGroup: true, allowGroupFrom: ["grp-x"] });
+const bot10 = globalThis.__qqBotFake.instances.at(-1);
+bot10.emitReady();
+
+// a) 两人先后 @（同批取走）：注入带"按人分别回复"提示；qq_reply(to) 路由到该人最新来信
+await bot10.emitMessage({}, groupMsg("NEW-OWNER", "grp-x", "m18a"));
+await bot10.emitMessage({}, groupMsg("member-b", "grp-x", "m18b"));
+await waitInbox(gw10, 2);
+let c18 = claimOf(gw10.claim({ via: "ups" }));
+assert.equal(c18.action, "inject");
+assert.equal(c18.count, 2, "两人来信应同批注入");
+assert.match(c18.reason, /分别调用 qq_reply/, "多发件人注入应带按人回复提示");
+assert.match(c18.reason, /member-b/);
+await gw10.reply("回给 A", "NEW-OWNER");
+assert.equal(bot10.sent.at(-1).target.msgId, "m18a", "to=A 应路由到 A 的来信 msg_id");
+await gw10.reply("回给 B（默认最近来信人）");
+assert.equal(bot10.sent.at(-1).target.msgId, "m18b", "默认应路由到最近来信人 B");
+
+// b) to 指向没有记录的人 → 明确报错而不是发错对象
+const rBad = await gw10.reply("不该发出", "stranger-x");
+assert.equal(rBad.ok, false);
+assert.match(rBad.error, /stranger-x/);
+assert.equal(bot10.sent.length, 2, "报错路径不得产生出站");
+
+// c) 被动发送失败（msg_id 被撤回/超窗）→ 降级主动重发，回复不蒸发
+bot10.failPassive = true;
+const rFall = await gw10.reply("降级测试");
+assert.equal(rFall.ok, true);
+assert.equal(rFall.stats.proactive, 1, "被动失败应降级为 1 片主动");
+assert.equal(bot10.sent.at(-1).target.msgId, undefined, "降级片不得携带 msg_id");
+bot10.failPassive = false;
+
+// d) 群被动窗口 5 分钟：过期目标自动去掉 msg_id 走主动
+const stale = gw10.recentTargets.get("member-b");
+stale.at -= 6 * 60 * 1000;
+await gw10.reply("过期窗口测试", "member-b");
+assert.equal(bot10.sent.at(-1).target.msgId, undefined, "群 5 分钟窗口外的 msg_id 不得使用");
+gw10.disconnect();
+console.log("ok  按人路由：to=A/B 各归其位 / 陌生人拒绝 / 被动失败降级 / 群 5min 窗口");
+
 // -- 清理 ------------------------------------------------------------------
 await cp.close();
 console.log("\nFLOW HARNESS PASSED");

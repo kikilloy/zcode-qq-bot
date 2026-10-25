@@ -12,7 +12,9 @@
  */
 
 import {
+  GROUP_PASSIVE_TTL_MS,
   PASSIVE_REPLY_LIMIT,
+  PASSIVE_REPLY_TTL_MS,
   ReplyBudget,
   budgetWarning,
   chunkText,
@@ -183,6 +185,8 @@ export class Gateway {
   private duty = false;
   /** 当前挂起的 qq_wait 数量（status 可见；claim 兜底据此判断"值守是否断线"。 */
   private waiterCount = 0;
+  /** 最近来信人 → 回复目标（0.4.4 按人路由）：qq_reply(to) 取这里，撤回重发后自动用最新 msg_id。 */
+  private recentTargets = new Map<string, PersistedTarget>();
 
   constructor(opts: GatewayOptions = {}) {
     this.sessionId = detectSessionId(opts.sessionId);
@@ -492,13 +496,20 @@ export class Gateway {
       }
 
       if (!this.cfg) return;
-      if (this.cfg.allowFrom.length === 0) {
-        logLine("inbound-ignored", { reason: "no-allowFrom", sender: senderId });
-        return;
-      }
-      if (!this.cfg.allowFrom.includes(senderId)) {
-        logLine("inbound-ignored", { reason: "not-allowlisted", sender: senderId });
-        return;
+      // 0.4.3 群开放名单：名单内群的所有成员 @ 放行（水群模式）；其余照走逐人白名单。
+      const groupOpen =
+        kind === "group" &&
+        typeof rt?.targetId === "string" &&
+        (this.cfg.allowGroupFrom ?? []).includes(rt.targetId);
+      if (!groupOpen) {
+        if (this.cfg.allowFrom.length === 0) {
+          logLine("inbound-ignored", { reason: "no-allowFrom", sender: senderId });
+          return;
+        }
+        if (!this.cfg.allowFrom.includes(senderId)) {
+          logLine("inbound-ignored", { reason: "not-allowlisted", sender: senderId });
+          return;
+        }
       }
       if (msg.messageId && this.seen.has(String(msg.messageId))) {
         logLine("inbound-dedupe", { messageId: String(msg.messageId) });
@@ -514,7 +525,7 @@ export class Gateway {
       }
 
       if (!rt || !rt.scope || !rt.targetId) return;
-      this.rememberTarget(rt.scope === "group" ? "group" : "c2c", rt.targetId, rt.msgId);
+      this.rememberTarget(rt.scope === "group" ? "group" : "c2c", rt.targetId, rt.msgId, senderId);
 
       const attachments = collectAttachments(msg);
       logLine("inbound", {
@@ -567,9 +578,21 @@ export class Gateway {
     return lines;
   }
 
-  private rememberTarget(scope: Scope, targetId: string, msgId?: string): void {
-    this.target = { scope, targetId, ...(msgId ? { msgId } : {}), at: Date.now() };
+  private rememberTarget(scope: Scope, targetId: string, msgId?: string, openid?: string): void {    this.target = { scope, targetId, ...(msgId ? { msgId } : {}), at: Date.now() };
     saveState(this.target);
+    if (openid) {
+      // 按人路由表：同一人再发消息（含撤回重发）自动刷新到最新 msg_id；容量限制防膨胀。
+      this.recentTargets.set(openid, this.target);
+      if (this.recentTargets.size > 32) {
+        const oldest = [...this.recentTargets.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+        if (oldest) this.recentTargets.delete(oldest[0]);
+      }
+    }
+  }
+
+  /** 该目标当前仍可用的被动 msg_id（群 5 分钟 / C2C 60 分钟窗口，超时返回 undefined 走主动）。 */
+  private effectiveMsgId(t: PersistedTarget, now = Date.now()): string | undefined {
+    return freshMsgId(t, now, t.scope === "group" ? GROUP_PASSIVE_TTL_MS : PASSIVE_REPLY_TTL_MS);
   }
 
   // ------------------------------------------------------------------- claim
@@ -603,12 +626,7 @@ export class Gateway {
     }
     if (this.inbox.length > 0) {
       const items = this.inbox.splice(0, CLAIM_MAX_PER_TURN);
-      const reason = items
-        .map((i) => {
-          const t = new Date(i.at).toLocaleTimeString("zh-CN", { hour12: false });
-          return `[QQ] ${i.content}（来自 ${i.openid}，${t}）`;
-        })
-        .join("\n\n");
+      const reason = this.injectBody(items);
       this.lastStimulus = { kind: "inject", at: now };
       logLine("claim-inject", { via, count: items.length, remaining: this.inbox.length });
       return { action: "inject", reason, count: items.length };
@@ -652,12 +670,7 @@ export class Gateway {
           this.claimSeq += 1; // 空闲通知据此自熄
           this.lastStimulus = { kind: "inject", at: Date.now() };
           logLine("wait-inject", { count: items.length, remaining: this.inbox.length });
-          const body = items
-            .map((i) => {
-              const t = new Date(i.at).toLocaleTimeString("zh-CN", { hour12: false });
-              return `[QQ] ${i.content}（来自 ${i.openid}，${t}）`;
-            })
-            .join("\n\n");
+          const body = this.injectBody(items);
           return `${body}\n（处理并回复上面的来信（qq_reply）后，必须再次调用 qq_wait 继续值守）`;
         }
         if (Date.now() >= deadline) {
@@ -676,6 +689,21 @@ export class Gateway {
     this.duty = false;
     logLine("duty-stop", {});
     return { duty: this.duty };
+  }
+
+  /** 注入文本（claim 与 qq_wait 共用）：逐条列出；多发件人时提示按人路由逐人回复。 */
+  private injectBody(items: InboxItem[]): string {
+    const lines = items.map((i) => {
+      const t = new Date(i.at).toLocaleTimeString("zh-CN", { hour12: false });
+      return `[QQ] ${i.content}（来自 ${i.openid}，${t}）`;
+    });
+    const senders = [...new Set(items.map((i) => i.openid))];
+    if (senders.length > 1) {
+      lines.push(
+        `（注意：上面 ${items.length} 条来信来自 ${senders.length} 个不同的人——请对每人分别调用 qq_reply（text=给这个人的回复，to=该人的 openid），不要把不同人的回复混进一条）`,
+      );
+    }
+    return lines.join("\n\n");
   }
 
   /**
@@ -740,17 +768,29 @@ export class Gateway {
 
   // ----------------------------------------------------------------- outbound
 
-  /** qq_reply：分片 → 被动优先 → 配额记账 → 耗尽降级主动。 */
-  async reply(text: string): Promise<ReplyOutcome> {
+  /**
+   * qq_reply：分片 → 被动优先 → 配额记账 → 耗尽降级主动。
+   * 0.4.4 按人路由：to=openid 时回复该来信人（用其最新 msg_id），缺省回最近来信人——
+   * 多人群聊一批多人来信时逐人回复不互踩。
+   */
+  async reply(text: string, to?: string): Promise<ReplyOutcome> {
     if (!this.running) return { ok: false, error: "QQ 未连接：先 qq_connect（或 /qq-connect）" };
-    if (!this.target) {
+    let target = this.target;
+    if (to) {
+      const t = this.recentTargets.get(to);
+      if (!t) {
+        return { ok: false, error: `没有 ${to} 的最近来信记录（窗口外或从未收到）——请让 TA 重新发一条，或省略 to 回复最近来信人` };
+      }
+      target = t;
+    }
+    if (!target) {
       return { ok: false, error: "还没有回复目标：让用户在 QQ 里给机器人发一条消息" };
     }
     const body = text.trim();
     if (!body) return { ok: false, error: "回复内容为空" };
     this.lastReplyAt = Date.now();
-    const stats = await this.sendChunks(body);
-    const msgId = this.target.msgId;
+    const stats = await this.sendChunks(body, undefined, target);
+    const msgId = this.effectiveMsgId(target);
     if (msgId) {
       const check = this.budget.check(msgId);
       return { ok: true, stats, remaining: check.remaining, warn: budgetWarning(check.remaining, check.allowed) };
@@ -758,10 +798,10 @@ export class Gateway {
     return { ok: true, stats, remaining: 0, warn: "none" };
   }
 
-  /** 出站公共路径：分片、被动优先、配额记账、单片失败不阻断后续片。 */
-  private async sendChunks(text: string, prefix?: string): Promise<SendStats> {
+  /** 出站公共路径：分片、被动优先、配额记账；被动失败/耗尽降级主动，单片失败不阻断后续片。 */
+  private async sendChunks(text: string, prefix?: string, target: PersistedTarget = this.target!): Promise<SendStats> {
     const stats: SendStats = { sent: 0, passive: 0, proactive: 0 };
-    if (!this.bot || !this.target) {
+    if (!this.bot || !target) {
       logLine("outbound-skip", { reason: !this.bot ? "no-bot" : "no-target" });
       return stats;
     }
@@ -769,7 +809,7 @@ export class Gateway {
     const limit = this.cfg?.maxChunkChars ?? 4500;
     for (const chunk of chunkText(body, limit)) {
       if (!chunk.trim()) continue;
-      let msgId = this.target.msgId;
+      let msgId = this.effectiveMsgId(target);
       if (msgId) {
         const check = this.budget.check(msgId);
         if (!check.allowed) {
@@ -777,11 +817,32 @@ export class Gateway {
           msgId = undefined; // 降级主动消息
         }
       }
-      const to = { scope: this.target.scope, targetId: this.target.targetId, ...(msgId ? { msgId } : {}) };
+      const scope = target.scope;
+      const targetId = target.targetId;
       try {
-        await this.bot.sendText(to, chunk);
+        if (msgId) {
+          await this.bot.sendText({ scope, targetId, msgId }, chunk);
+        } else {
+          await this.bot.sendText({ scope, targetId }, chunk);
+        }
       } catch (err) {
         this.lastError = (err as Error).message;
+        if (msgId) {
+          // 被动发送失败（msg_id 被撤回/超窗等）→ 降级主动重试一次，别让回复无声蒸发。
+          logLine("outbound-error", { error: this.lastError, fallback: "proactive" });
+          try {
+            await this.bot.sendText({ scope, targetId }, chunk);
+            stats.sent += 1;
+            stats.proactive += 1;
+            this.outCount += 1;
+            logLine("outbound", { mode: "proactive-fallback", chars: chunk.length, preview: chunk.slice(0, 80) });
+            continue;
+          } catch (err2) {
+            this.lastError = (err2 as Error).message;
+            logLine("outbound-error", { error: this.lastError, fallback: "failed" });
+            continue;
+          }
+        }
         logLine("outbound-error", { error: this.lastError });
         continue;
       }
@@ -829,7 +890,7 @@ export class Gateway {
     const saved = saveAllowFrom([id]);
     if (!saved.ok) return { ok: false, error: `保存失败：${saved.error}` };
     if (this.cfg) this.cfg.allowFrom = [id];
-    this.rememberTarget(this.pendingBind.scope, this.pendingBind.targetId, this.pendingBind.msgId);
+    this.rememberTarget(this.pendingBind.scope, this.pendingBind.targetId, this.pendingBind.msgId, this.pendingBind.openid);
     this.pendingBind = undefined;
     logLine("bound", { openid: id });
     return { ok: true };
@@ -840,7 +901,7 @@ export class Gateway {
   /** qq_setup / qq_config 共用：受控写配置并热更新内存。 */
   async applyConfig(patch: Partial<QQBotConfig>): Promise<{ ok: true; saved: string; needsReconnect: boolean } | { ok: false; error: string }> {
     const allowed: (keyof QQBotConfig)[] = [
-      "appId", "appSecret", "markdownSupport", "allowFrom", "allowGroup",
+      "appId", "appSecret", "markdownSupport", "allowFrom", "allowGroup", "allowGroupFrom",
       "autoConnect", "maxChunkChars", "forwardTerminal", "selfHeal",
       "idleNotify", "idleAck",
     ];
@@ -885,6 +946,8 @@ export class Gateway {
       lock: holder ? { pid: holder.pid, host: holder.host, port: holder.port, sessionId: holder.sessionId } : null,
       config: configPath(),
       allowFrom: this.cfg?.allowFrom ?? [],
+      allowGroup: this.cfg?.allowGroup ?? false,
+      allowGroupFrom: this.cfg?.allowGroupFrom ?? [],
       target: this.target ? `${this.target.scope}:${this.target.targetId}` : null,
       passiveBudget: msgId ? `${this.budget.remaining(msgId)} / ${PASSIVE_REPLY_LIMIT}` : "-",
       inboxCount: this.inbox.length,

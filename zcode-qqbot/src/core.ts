@@ -17,6 +17,8 @@ export const QQ_MARKER = "[QQ]";
 export const PASSIVE_REPLY_LIMIT = 4;
 /** 被动回复有效期窗口（C2C，60 分钟）。 */
 export const PASSIVE_REPLY_TTL_MS = 60 * 60 * 1000;
+/** 被动回复有效期窗口（群聊，5 分钟；平台文档，超时 msg_id 即失效）。 */
+export const GROUP_PASSIVE_TTL_MS = 5 * 60 * 1000;
 /** 单条消息安全分片长度，留余量在 ~5000 字符平台上限之下。 */
 export const DEFAULT_MAX_CHUNK_CHARS = 4500;
 

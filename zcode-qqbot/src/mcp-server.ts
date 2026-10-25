@@ -11,7 +11,7 @@ import { Gateway } from "./gateway.ts";
 import { PairManager } from "./pair.ts";
 import { logLine } from "./log.ts";
 
-const SERVER_INFO = { name: "zcode-qqbot", version: "0.4.2" };
+const SERVER_INFO = { name: "zcode-qqbot", version: "0.4.4" };
 
 // ------------------------------------------------------------------ bootstrap
 
@@ -176,7 +176,7 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: "qq_config",
-    description: "受控改配置：allowFrom/forwardTerminal/autoConnect/maxChunkChars/selfHeal/idleNotify/idleAck/markdownSupport/allowGroup/appId/appSecret。改凭据类字段后需重连",
+    description: "受控改配置：allowFrom/allowGroup/allowGroupFrom（群开放名单）/forwardTerminal/autoConnect/maxChunkChars/selfHeal/idleNotify/idleAck/markdownSupport/appId/appSecret。改凭据类字段后需重连",
     inputSchema: {
       type: "object",
       properties: {
@@ -241,17 +241,22 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: "qq_reply",
-    description: "向当前 QQ 目标发文本：自动分片、被动回复优先、配额记账、耗尽降级主动消息。模型完成回复后必须调用本工具把内容发到 QQ",
+    description:
+      "向 QQ 发文本：自动分片、被动回复优先、配额记账、被动失败/耗尽降级主动消息。模型完成回复后必须调用本工具把内容发到 QQ。一批来信有多个不同发件人时，对每人分别调用并带 to=该人 openid",
     inputSchema: {
       type: "object",
-      properties: { text: { type: "string", description: "要发送的完整回复内容" } },
+      properties: {
+        text: { type: "string", description: "要发送的完整回复内容" },
+        to: { type: "string", description: "可选，回复对象的 openid（按人路由，用其最新来信 msg_id）；缺省回复最近来信人" },
+      },
       required: ["text"],
       additionalProperties: false,
     },
     handler: async (args) => {
       const text = strArg(args, "text");
       if (!text) return "text 不能为空";
-      const r = await gateway.reply(text);
+      const to = strArg(args, "to") || undefined;
+      const r = await gateway.reply(text, to);
       if (!r.ok) return `发送失败：${r.error}`;
       const st = gateway.status();
       const suffix = r.warn === "none" ? "" : warnText(r.warn);

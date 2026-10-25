@@ -16,6 +16,8 @@ export interface QQBotConfig {
   markdownSupport: boolean;
   /** 允许驱动会话的 QQ openid 白名单。空 = 只能走绑定流程。 */
   allowFrom: string[];
+  /** 开放群名单（group_openid）：名单内群的所有成员 @ 都放行（0.4.3）。空 = 群消息仍按 allowFrom 逐人过滤。 */
+  allowGroupFrom: string[];
   /** 每条消息分片长度（字符）。 */
   maxChunkChars: number;
   /** 终端镜像：把 zcode 里输入的提示词转发到 QQ。默认关。 */
@@ -71,6 +73,7 @@ export function normalizeConfig(raw: unknown, filePath = configPath()): LoadResu
     appSecret,
     markdownSupport: r.markdownSupport === true,
     allowFrom: strArray(r.allowFrom),
+    allowGroupFrom: strArray(r.allowGroupFrom),
     maxChunkChars: clampInt(r.maxChunkChars, 500, 4800, DEFAULT_MAX_CHUNK_CHARS),
     forwardTerminal: r.forwardTerminal === true,
     allowGroup: r.allowGroup === true,
@@ -154,6 +157,7 @@ export function ensureExampleConfig(filePath = configPath()): { created: boolean
     appSecret: "YOUR_QQBOT_APP_SECRET",
     markdownSupport: false,
     allowFrom: [] as string[],
+    allowGroupFrom: [] as string[],
     maxChunkChars: DEFAULT_MAX_CHUNK_CHARS,
     forwardTerminal: false,
     allowGroup: false,
